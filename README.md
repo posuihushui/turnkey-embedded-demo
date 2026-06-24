@@ -1,36 +1,65 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Turnkey Sui Embedded Wallet Demo
 
-## Getting Started
+Next.js demo for Turnkey Embedded Wallets with Sui support. It signs in with Turnkey, creates an embedded `ADDRESS_FORMAT_SUI` wallet account, reads Sui testnet balance, constructs a Sui transfer, signs the Sui transaction digest through Turnkey raw payload signing, and broadcasts it through the Sui JSON-RPC API.
 
-First, run the development server:
+## Requirements
+
+- Node.js 22 or newer. This project uses `@mysten/sui@2.x`, which requires Node 22+.
+- A Turnkey organization with an Auth Proxy config for Embedded Wallets.
+- Sui testnet funds for the generated Sui address.
+
+## Setup
+
+Copy `.env.example` to `.env.local` and fill the required values:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+NEXT_PUBLIC_ORGANIZATION_ID=your_turnkey_parent_organization_id
+NEXT_PUBLIC_AUTH_PROXY_CONFIG_ID=your_turnkey_auth_proxy_config_id
+NEXT_PUBLIC_SUI_NETWORK=testnet
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Optional values:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+NEXT_PUBLIC_TURNKEY_API_BASE_URL=https://api.turnkey.com
+NEXT_PUBLIC_SUI_RPC_URL=https://fullnode.testnet.sui.io:443
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Run the app:
 
-## Learn More
+```bash
+npm install
+npm run dev
+```
 
-To learn more about Next.js, take a look at the following resources:
+Open [http://localhost:3000](http://localhost:3000).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Scripts
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+npm test
+npm run lint
+npm run typecheck
+npm run build
+```
 
-## Deploy on Vercel
+## Dependency Notes
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+`package.json` pins an override for `viem`'s `ws` dependency so the Turnkey wallet stack resolves to `ws@8.21.0`.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+As of this setup, `npm audit --omit=dev` still reports a moderate advisory for `next@16.2.9` through Next's bundled `postcss@8.4.31`. The latest stable Next release is still affected; the available clean versions are canary builds, so this demo stays on stable Next.
+
+## Sui Notes
+
+The demo creates this Turnkey wallet account by default:
+
+```ts
+{
+  curve: "CURVE_ED25519",
+  pathFormat: "PATH_FORMAT_BIP32",
+  path: "m/44'/784'/0'/0'/0'",
+  addressFormat: "ADDRESS_FORMAT_SUI",
+}
+```
+
+Sui signing follows Turnkey's current Sui guidance: build transaction bytes with the Sui SDK, hash `messageWithIntent("TransactionData", txBytes)` with Blake2b-256, call Turnkey `signRawPayload` with `HASH_FUNCTION_NOT_APPLICABLE`, then serialize `r + s + publicKey` as an Ed25519 Sui signature.
