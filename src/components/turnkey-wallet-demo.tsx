@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CheckCircle2,
+  Coins,
   Copy,
   ExternalLink,
   KeyRound,
@@ -12,6 +13,7 @@ import {
   RefreshCw,
   Send,
   ShieldCheck,
+  Vault,
   Wallet,
 } from "lucide-react";
 import {
@@ -34,8 +36,24 @@ import {
   getSuiBalanceMist,
   getSuiRpcUrl,
 } from "@/lib/sui-service";
+import { getVaultContracts } from "@/lib/vault-contracts";
+import {
+  executeTurnkeyVaultDeposit,
+  formatUsdcBaseUnits,
+  getVaultDepositStatus,
+  getVaultUsdcBalanceBaseUnits,
+  parseUsdcToBaseUnits,
+} from "@/lib/vault-service";
 
-type BusyAction = "login" | "create-wallet" | "refresh" | "send" | "logout" | null;
+type BusyAction =
+  | "login"
+  | "create-wallet"
+  | "refresh"
+  | "refresh-usdc"
+  | "send"
+  | "vault-deposit"
+  | "logout"
+  | null;
 
 type LogEntry = {
   id: number;
@@ -71,14 +89,24 @@ export function TurnkeyWalletDemo({ config }: { config: DemoConfig }) {
 
   const suiClient = useMemo(() => createSuiJsonRpcClient(config), [config]);
   const suiAccount = useMemo(() => findSuiWalletAccount(wallets), [wallets]);
+  const vaultContracts = useMemo(
+    () => getVaultContracts(config.suiNetwork),
+    [config.suiNetwork],
+  );
   const isAuthenticated = authState === AuthState.Authenticated;
   const isClientReady = clientState === ClientState.Ready;
 
   const [amount, setAmount] = useState("0.001");
+  const [vaultAmount, setVaultAmount] = useState("1");
   const [recipient, setRecipient] = useState("");
   const [balanceMist, setBalanceMist] = useState<bigint | null>(null);
+  const [usdcBalanceBaseUnits, setUsdcBalanceBaseUnits] = useState<bigint | null>(null);
+  const [vaultSettlementActive, setVaultSettlementActive] = useState<boolean | null>(
+    null,
+  );
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [lastDigest, setLastDigest] = useState<string | null>(null);
+  const [lastVaultDigest, setLastVaultDigest] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>(initialLog);
 
   const addLog = useCallback((entry: Omit<LogEntry, "id">) => {
@@ -113,6 +141,93 @@ export function TurnkeyWalletDemo({ config }: { config: DemoConfig }) {
     }
   }, [addLog, config.suiNetwork, suiAccount, suiClient]);
 
+  const loadVaultUsdcBalance = useCallback(async () => {
+    if (!suiAccount || !vaultContracts) {
+      return null;
+    }
+
+    const nextBalance = await getVaultUsdcBalanceBaseUnits(
+      suiClient,
+      suiAccount.address,
+      vaultContracts,
+    );
+    setUsdcBalanceBaseUnits(nextBalance);
+    return nextBalance;
+  }, [suiAccount, suiClient, vaultContracts]);
+
+  const loadVaultDepositStatus = useCallback(async () => {
+    if (!vaultContracts) {
+      return null;
+    }
+
+    const status = await getVaultDepositStatus(suiClient, vaultContracts);
+    setVaultSettlementActive(status.settlementActive);
+    return status;
+  }, [suiClient, vaultContracts]);
+
+  useEffect(() => {
+    if (!vaultContracts) {
+      return;
+    }
+
+    let cancelled = false;
+
+    getVaultDepositStatus(suiClient, vaultContracts)
+      .then((status) => {
+        if (!cancelled) {
+          setVaultSettlementActive(status.settlementActive);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setVaultSettlementActive(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [suiClient, vaultContracts]);
+
+  const refreshVaultUsdcBalance = useCallback(async () => {
+    if (!suiAccount || !vaultContracts) {
+      return;
+    }
+
+    setBusyAction("refresh-usdc");
+    try {
+      const [nextBalance, status] = await Promise.all([
+        loadVaultUsdcBalance(),
+        loadVaultDepositStatus(),
+      ]);
+      if (nextBalance === null) {
+        return;
+      }
+      addLog({
+        title: "USDC refreshed",
+        detail: `${formatUsdcBaseUnits(nextBalance)} USDC on ${
+          config.suiNetwork
+        }. ${status?.settlementActive ? "Deposit settlement is active." : "Deposits are open."}`,
+        tone: "success",
+      });
+    } catch (error) {
+      addLog({
+        title: "USDC balance error",
+        detail: getErrorMessage(error),
+        tone: "error",
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  }, [
+    addLog,
+    config.suiNetwork,
+    loadVaultDepositStatus,
+    loadVaultUsdcBalance,
+    suiAccount,
+    vaultContracts,
+  ]);
+
   const login = async () => {
     setBusyAction("login");
     try {
@@ -138,7 +253,10 @@ export function TurnkeyWalletDemo({ config }: { config: DemoConfig }) {
     try {
       await logout();
       setBalanceMist(null);
+      setUsdcBalanceBaseUnits(null);
+      setVaultSettlementActive(null);
       setLastDigest(null);
+      setLastVaultDigest(null);
       addLog({
         title: "Signed out",
         detail: "Local Turnkey session was cleared.",
@@ -284,6 +402,75 @@ export function TurnkeyWalletDemo({ config }: { config: DemoConfig }) {
     }
   };
 
+  const depositToVault = async () => {
+    if (!suiAccount || !httpClient || !session?.organizationId || !vaultContracts) {
+      addLog({
+        title: "Vault not ready",
+        detail: "Sign in with a Sui wallet on testnet before depositing.",
+        tone: "error",
+      });
+      return;
+    }
+
+    setBusyAction("vault-deposit");
+    try {
+      const amountBaseUnits = parseUsdcToBaseUnits(vaultAmount);
+      const [currentUsdcBalance, depositStatus] = await Promise.all([
+        loadVaultUsdcBalance(),
+        loadVaultDepositStatus(),
+      ]);
+
+      if (depositStatus?.settlementActive) {
+        throw new Error(
+          "Deposit settlement is active on the vault. Try again after the operator completes settlement.",
+        );
+      }
+
+      if (currentUsdcBalance !== null && currentUsdcBalance < amountBaseUnits) {
+        throw new Error(
+          `Insufficient USDC balance. Have ${formatUsdcBaseUnits(
+            currentUsdcBalance,
+          )}, need ${formatUsdcBaseUnits(amountBaseUnits)}`,
+        );
+      }
+
+      const signerPublicKeyHex = await getSignerPublicKey();
+      addLog({
+        title: "Vault signing requested",
+        detail: `Building ${formatUsdcBaseUnits(amountBaseUnits)} USDC deposit.`,
+        tone: "info",
+      });
+
+      const result = await executeTurnkeyVaultDeposit({
+        client: suiClient,
+        httpClient,
+        organizationId: session.organizationId,
+        sender: suiAccount.address,
+        amountBaseUnits,
+        signerPublicKeyHex,
+        contracts: vaultContracts,
+      });
+
+      setLastDigest(result.digest);
+      setLastVaultDigest(result.digest);
+      addLog({
+        title: "Vault deposit submitted",
+        detail: result.digest,
+        tone: "success",
+      });
+      await loadVaultUsdcBalance();
+      await loadVaultDepositStatus();
+    } catch (error) {
+      addLog({
+        title: "Vault deposit error",
+        detail: getErrorMessage(error),
+        tone: "error",
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   const copyAddress = async () => {
     if (!suiAccount?.address) {
       return;
@@ -311,6 +498,19 @@ export function TurnkeyWalletDemo({ config }: { config: DemoConfig }) {
         network: config.suiNetwork,
       })
     : null;
+  const vaultStatusLabel = !vaultContracts
+    ? "Testnet only"
+    : vaultSettlementActive === null
+      ? "Checking"
+      : vaultSettlementActive
+        ? "Settlement active"
+        : "Deposits open";
+  const vaultStatusClass =
+    !vaultContracts || vaultSettlementActive === true
+      ? "bg-[#fff7e6] text-[#9a5f00]"
+      : vaultSettlementActive === null
+        ? "bg-[#eef3f2] text-[#607873]"
+        : "bg-[#e9f5f3] text-[#0e6f66]";
 
   return (
     <main className="min-h-screen bg-[#f7faf9] text-[#10201f]">
@@ -347,6 +547,11 @@ export function TurnkeyWalletDemo({ config }: { config: DemoConfig }) {
               icon={<Send size={16} />}
               label={lastDigest ? "Transaction sent" : "Test transfer"}
             />
+            <RailItem
+              active={Boolean(lastVaultDigest)}
+              icon={<Vault size={16} />}
+              label={lastVaultDigest ? "Vault deposit" : "Vault testnet"}
+            />
           </div>
 
           <div className="mt-8 rounded-lg border border-[#dce8e4] bg-[#f7faf9] p-4">
@@ -365,7 +570,7 @@ export function TurnkeyWalletDemo({ config }: { config: DemoConfig }) {
                 Turnkey Sui Wallet
               </h1>
               <p className="mt-1 text-sm text-[#607873]">
-                Embedded wallet demo for Sui testnet accounts and transaction signing.
+                Embedded wallet demo for Sui testnet accounts, transaction signing, and vault deposits.
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -547,6 +752,120 @@ export function TurnkeyWalletDemo({ config }: { config: DemoConfig }) {
                     >
                       <ExternalLink size={16} />
                       View transaction
+                    </a>
+                  ) : null}
+                </div>
+              </section>
+
+              <section className="rounded-lg border border-[#dce8e4] bg-white p-5 shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-sm font-semibold">
+                    <Vault size={18} className="text-[#0e7c72]" />
+                    Vault testnet
+                  </div>
+                  <span
+                    className={`rounded-md px-2 py-1 text-xs font-semibold ${vaultStatusClass}`}
+                  >
+                    {vaultStatusLabel}
+                  </span>
+                </div>
+
+                <div className="mt-5 grid gap-4 md:grid-cols-2">
+                  <div className="rounded-lg border border-[#dce8e4] bg-[#f7faf9] p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#607873]">
+                      Package
+                    </p>
+                    <p className="mt-2 break-all font-mono text-xs text-[#10201f]">
+                      {vaultContracts?.PACKAGE_ID ?? "NEXT_PUBLIC_SUI_NETWORK=testnet"}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-[#dce8e4] bg-[#f7faf9] p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#607873]">
+                      Vault object
+                    </p>
+                    <p className="mt-2 break-all font-mono text-xs text-[#10201f]">
+                      {vaultContracts?.VAULT_OBJECT_ID ?? "Unavailable"}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-5 grid gap-4 md:grid-cols-[minmax(0,1fr)_180px]">
+                  <div>
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#607873]">
+                        USDC balance
+                      </p>
+                      <button
+                        type="button"
+                        onClick={refreshVaultUsdcBalance}
+                        disabled={!suiAccount || !vaultContracts || busyAction !== null}
+                        title="Refresh USDC balance"
+                        className="inline-flex size-9 items-center justify-center rounded-lg border border-[#c9d9d4] bg-white text-[#26403c] transition hover:border-[#0e7c72] disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {busyAction === "refresh-usdc" ? (
+                          <LoaderCircle size={16} className="animate-spin" />
+                        ) : (
+                          <RefreshCw size={16} />
+                        )}
+                      </button>
+                    </div>
+                    <p className="mt-2 text-3xl font-semibold tracking-normal">
+                      {usdcBalanceBaseUnits === null
+                        ? "0"
+                        : formatUsdcBaseUnits(usdcBalanceBaseUnits)}
+                      <span className="ml-2 text-base font-medium text-[#607873]">USDC</span>
+                    </p>
+                  </div>
+                  <label className="block">
+                    <span className="text-xs font-semibold uppercase tracking-[0.12em] text-[#607873]">
+                      Deposit
+                    </span>
+                    <input
+                      value={vaultAmount}
+                      onChange={(event) => setVaultAmount(event.target.value)}
+                      className="mt-2 h-11 w-full rounded-lg border border-[#c9d9d4] bg-white px-3 text-sm outline-none transition focus:border-[#0e7c72] focus:ring-2 focus:ring-[#bde8e2]"
+                      inputMode="decimal"
+                    />
+                  </label>
+                </div>
+
+                <div className="mt-5 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={depositToVault}
+                    disabled={
+                      !suiAccount ||
+                      !vaultContracts ||
+                      vaultSettlementActive !== false ||
+                      busyAction !== null
+                    }
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-[#0e7c72] px-4 text-sm font-semibold text-white transition hover:bg-[#0b675f] disabled:cursor-not-allowed disabled:bg-[#b7cbc6]"
+                  >
+                    {busyAction === "vault-deposit" ? (
+                      <LoaderCircle size={16} className="animate-spin" />
+                    ) : (
+                      <Coins size={16} />
+                    )}
+                    Deposit to vault
+                  </button>
+                  {vaultSettlementActive ? (
+                    <span className="text-sm font-medium text-[#9a5f00]">
+                      Deposits are blocked during settlement.
+                    </span>
+                  ) : null}
+                  {lastVaultDigest ? (
+                    <a
+                      href={buildSuiExplorerUrl({
+                        type: "tx",
+                        value: lastVaultDigest,
+                        network: config.suiNetwork,
+                      })}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-[#c9d9d4] bg-white px-3 text-sm font-semibold text-[#26403c] transition hover:border-[#0e7c72]"
+                    >
+                      <ExternalLink size={16} />
+                      View vault tx
                     </a>
                   ) : null}
                 </div>

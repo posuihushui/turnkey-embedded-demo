@@ -16,8 +16,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Turnkey Sui Wallet Demo",
-  description: "Next.js embedded wallet demo powered by Turnkey and Sui.",
+  title: "Turnkey Sui Vault Demo",
+  description: "Next.js embedded wallet and vault deposit demo powered by Turnkey and Sui.",
 };
 
 export default function RootLayout({

@@ -5,6 +5,7 @@ import {
   Network,
   Send,
   ShieldCheck,
+  Vault,
   Wallet,
 } from "lucide-react";
 import type { DemoConfig } from "@/lib/demo-config";
@@ -34,6 +35,7 @@ export function MissingEnvDemo({ config }: { config: DemoConfig }) {
             <SetupItem icon={<ShieldCheck size={16} />} label="Turnkey auth" />
             <SetupItem icon={<Wallet size={16} />} label="Sui wallet" />
             <SetupItem icon={<Send size={16} />} label="Testnet transfer" />
+            <SetupItem icon={<Vault size={16} />} label="Vault testnet" />
           </div>
 
           <div className="mt-8 rounded-lg border border-[#dce8e4] bg-[#f7faf9] p-4">
@@ -52,7 +54,7 @@ export function MissingEnvDemo({ config }: { config: DemoConfig }) {
                 Turnkey Sui Wallet
               </h1>
               <p className="mt-1 text-sm text-[#607873]">
-                Embedded wallet demo for Sui testnet accounts and transaction signing.
+                Embedded wallet demo for Sui testnet accounts, transaction signing, and vault deposits.
               </p>
             </div>
             <button

@@ -1,12 +1,13 @@
 # Turnkey Sui Embedded Wallet Demo
 
-Next.js demo for Turnkey Embedded Wallets with Sui support. It signs in with Turnkey, creates an embedded `ADDRESS_FORMAT_SUI` wallet account, reads Sui testnet balance, constructs a Sui transfer, signs the Sui transaction digest through Turnkey raw payload signing, and broadcasts it through the Sui JSON-RPC API.
+Next.js demo for Turnkey Embedded Wallets with Sui support. It signs in with Turnkey, creates an embedded `ADDRESS_FORMAT_SUI` wallet account, reads Sui testnet balances, constructs Sui transfers and TBook vault deposits, signs Sui transaction digests through Turnkey raw payload signing, and broadcasts through the Sui JSON-RPC API.
 
 ## Requirements
 
 - Node.js 22 or newer. This project uses `@mysten/sui@2.x`, which requires Node 22+.
 - A Turnkey organization with an Auth Proxy config for Embedded Wallets.
-- Sui testnet funds for the generated Sui address.
+- Sui testnet funds for gas on the generated Sui address.
+- Sui testnet USDC for vault deposit testing.
 
 ## Setup
 
@@ -63,3 +64,13 @@ The demo creates this Turnkey wallet account by default:
 ```
 
 Sui signing follows Turnkey's current Sui guidance: build transaction bytes with the Sui SDK, hash `messageWithIntent("TransactionData", txBytes)` with Blake2b-256, call Turnkey `signRawPayload` with `HASH_FUNCTION_NOT_APPLICABLE`, then serialize `r + s + publicKey` as an Ed25519 Sui signature.
+
+## Vault Testnet Notes
+
+The vault testnet integration is based on `/Users/lake/work/tbook/tbook-vault-fe` and uses the testnet contracts in `src/lib/vault-contracts.ts`. The deposit flow calls:
+
+```ts
+0xcf7293eba9307057793d0685e4c573b12a2c2928ab60028f1d8766f1d4879c1c::vault_api::deposit
+```
+
+Set `NEXT_PUBLIC_SUI_NETWORK=testnet`, fund the embedded Sui address with gas and testnet USDC, then use the Vault testnet panel to refresh USDC and submit a deposit.
